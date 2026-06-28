@@ -19,7 +19,7 @@ email folder or network resource.
 import hashlib
 import json
 import logging
-from urllib.parse import urlparse, urlunparse, urlencode, parse_qsl
+from urllib.parse import urlencode, parse_qsl
 
 from config import SEEN_JOBS_FILE
 
@@ -45,7 +45,20 @@ _TRACKING_PARAMS: frozenset[str] = frozenset(
 
 def clean_url(raw_url: str) -> str:
     """
-    Return a canonical form of *raw_url* with all tracking parameters removed.
+    Return a canonical form of *raw_url* suitable for deterministic MD5
+    hashing.
+
+    Canonicalisation steps
+    ----------------------
+    1. Force the entire URL to **lowercase**.
+    2. Strip the scheme (``http://``, ``https://``) and leading ``www.``
+       prefix so that protocol and subdomain differences don't cause hash
+       mismatches.
+    3. Parse with ``urlsplit`` + ``parse_qsl``.
+    4. Remove all keys present in ``_TRACKING_PARAMS``.
+    5. **Sort** the surviving query parameters alphabetically by key so that
+       ``?a=1&b=2`` and ``?b=2&a=1`` hash identically.
+    6. Reconstruct: ``domain + path + sorted_query``.
 
     Parameters
     ----------
@@ -55,32 +68,44 @@ def clean_url(raw_url: str) -> str:
     Returns
     -------
     str
-        The cleaned URL, safe for hashing and inclusion in the report email.
+        The cleaned, canonical URL string (no scheme, no fragment, sorted QS).
     """
     try:
-        parsed = urlparse(raw_url.strip())
-        # Rebuild query string without tracking keys (case-insensitive match)
-        clean_qs = urlencode(
+        url = raw_url.strip().lower()
+
+        # Strip scheme
+        for prefix in ("https://", "http://"):
+            if url.startswith(prefix):
+                url = url[len(prefix):]
+                break
+
+        # Strip leading "www."
+        if url.startswith("www."):
+            url = url[4:]
+
+        # Parse the scheme-less URL (prepend a dummy scheme for urlsplit)
+        from urllib.parse import urlsplit
+        parts = urlsplit("http://" + url)
+
+        # Filter out tracking params and sort remaining alphabetically
+        filtered_qs = sorted(
             [
                 (k, v)
-                for k, v in parse_qsl(parsed.query)
-                if k.lower() not in _TRACKING_PARAMS
-            ]
+                for k, v in parse_qsl(parts.query)
+                if k not in _TRACKING_PARAMS
+            ],
+            key=lambda pair: pair[0],
         )
-        cleaned = urlunparse(
-            (
-                parsed.scheme,
-                parsed.netloc,
-                parsed.path,
-                parsed.params,
-                clean_qs,
-                "",          # strip fragments too
-            )
-        )
-        return cleaned.rstrip("/")   # normalise trailing slash
+
+        # Reconstruct: netloc + path (no scheme, no fragment)
+        canonical = parts.netloc + parts.path.rstrip("/")
+        if filtered_qs:
+            canonical += "?" + urlencode(filtered_qs)
+
+        return canonical
     except Exception:
         logger.warning("Could not clean URL '%s'; using raw value.", raw_url)
-        return raw_url.strip()
+        return raw_url.strip().lower()
 
 
 def url_to_hash(clean: str) -> str:

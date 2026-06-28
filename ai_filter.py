@@ -92,7 +92,7 @@ _DISCARD_KEYWORDS: frozenset[str] = frozenset([
     "director", "architect", "principal", "exclusively java", "spring boot",
     "exclusively node", "frontend only", "react developer", "angular developer",
     "vue developer", "ui developer", "graphic designer", "product manager",
-    "hr ", "human resources", "sales", "business development",
+    "hr", "human resources", "sales", "business development",
 ])
 
 # Junk / automated-alert phrases — jobs whose title or body contains any of
@@ -107,6 +107,19 @@ _JUNK_BLACKLIST: list[str] = [
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+# Pre-compiled word-boundary patterns for fallback keyword matching.
+# Using \b prevents substring false positives (e.g. "hr" matching "shred",
+# "ml" matching "html").  Patterns are compiled once at import time.
+_TIER_A_PATTERNS: list[re.Pattern] = [
+    re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE) for kw in _TIER_A_KEYWORDS
+]
+_TIER_B_PATTERNS: list[re.Pattern] = [
+    re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE) for kw in _TIER_B_KEYWORDS
+]
+_DISCARD_PATTERNS: list[re.Pattern] = [
+    re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE) for kw in _DISCARD_KEYWORDS
+]
 
 def _build_prompt(batch: list[dict]) -> str:
     """
@@ -311,20 +324,18 @@ def _keyword_fallback(batch: list[dict]) -> list[JobEvaluation]:
             )
             continue
 
-        # ── Check discard signals ─────────────────────────────────────
-        if any(kw in combined for kw in _DISCARD_KEYWORDS):
+        # ── Check discard signals (word-boundary matching) ─────────────
+        if any(pat.search(combined) for pat in _DISCARD_PATTERNS):
             tier = TIER_C
             score = 20
             reason = "[Keyword Fallback] Discard keywords detected (3+ yrs / senior / wrong stack)."
-        elif any(kw in combined for kw in _TIER_A_KEYWORDS):
-            has_keyword = True
+        elif any(pat.search(combined) for pat in _TIER_A_PATTERNS):
             tier = TIER_A
             score = 72   # conservative — we don't have AI confidence here
             reason = "[Keyword Fallback] Strong Python backend / fresher keywords matched."
-        elif any(kw in combined for kw in _TIER_B_KEYWORDS):
-            has_keyword = True
+        elif any(pat.search(combined) for pat in _TIER_B_PATTERNS):
             tier = TIER_B
-            score = 62   # deliberately below MIN_TIER_B_SCORE=70 unless clearly relevant
+            score = 72   # matches MIN_TIER_B_SCORE so fuzzy jobs survive Layer 4 during API outages
             reason = "[Keyword Fallback] General Python/software keywords matched."
         else:
             tier = TIER_C
