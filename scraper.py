@@ -34,7 +34,7 @@ Add entries to ``SCRAPE_BOARDS`` below.  Each entry is a dict::
 
 import logging
 import time
-from urllib.parse import urlencode
+from urllib.parse import quote_plus
 
 import cloudscraper
 from bs4 import BeautifulSoup
@@ -45,18 +45,16 @@ logger = logging.getLogger(__name__)
 # Configuration — Aggregate board targets
 # ---------------------------------------------------------------------------
 
-# Resolved from:
-#   IT Jobs Board:         https://tinyurl.com/2s722xa4
-#   Internship Jobs Board: https://tinyurl.com/mtshpdap
+# Direct WordPress site — no TinyURL redirects.
+BASE_URL: str = "https://freshersjobs24.com/"
+
 SCRAPE_BOARDS: list[dict] = [
     {
         "name": "FreshersJobs24 — IT Jobs",
-        "base_url": "http://freshersjobs24.com/category/it-jobs/",
         "locations": ["hyderabad"],
     },
     {
         "name": "FreshersJobs24 — Internship Jobs",
-        "base_url": "http://freshersjobs24.com/category/internship-jobs/",
         "locations": ["hyderabad", "remote"],
     },
 ]
@@ -78,11 +76,6 @@ _MAX_PAGES: int = 5
 # Seconds to sleep between consecutive HTTP requests.
 _REQUEST_DELAY: float = 2.0
 
-# Query parameter key names — swap these if a board uses different keys.
-_PARAM_KEY_KEYWORD: str = "keyword"
-_PARAM_KEY_LOCATION: str = "location"
-_PARAM_KEY_PAGE: str = "page"
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -93,43 +86,49 @@ def _build_search_url(
     keyword: str,
     location: str,
     page: int,
-    *,
-    param_keyword: str = _PARAM_KEY_KEYWORD,
-    param_location: str = _PARAM_KEY_LOCATION,
-    param_page: str = _PARAM_KEY_PAGE,
 ) -> str:
     """
-    Construct a dynamic search URL by appending query parameters.
+    Construct a WordPress-compatible search URL.
+
+    WordPress ignores custom query parameters and uses its native ``?s=``
+    search parameter.  Pagination is path-based (``/page/N/``), not
+    query-based.
+
+    The keyword and location are combined into a single search string and
+    encoded with ``quote_plus`` (spaces → ``+``).
+
+    Examples
+    --------
+    Page 1::
+
+        https://freshersjobs24.com/?s=python+backend+developer+hyderabad
+
+    Page 3::
+
+        https://freshersjobs24.com/page/3/?s=python+backend+developer+hyderabad
 
     Parameters
     ----------
     base_url : str
-        The board's base URL (e.g. ``http://freshersjobs24.com/category/it-jobs/``).
+        Site root (e.g. ``https://freshersjobs24.com/``).
     keyword : str
         Search keyword (e.g. ``"python developer"``).
     location : str
         Target location (e.g. ``"hyderabad"``).
     page : int
         Page number (1-indexed).
-    param_keyword : str
-        Query parameter key for the keyword (default ``"keyword"``).
-    param_location : str
-        Query parameter key for the location (default ``"location"``).
-    param_page : str
-        Query parameter key for the page number (default ``"page"``).
 
     Returns
     -------
     str
-        Fully-formed URL with encoded query string.
+        Fully-formed WordPress search URL.
     """
-    query_params = {
-        param_keyword: keyword,
-        param_location: location,
-        param_page: str(page),
-    }
-    separator = "&" if "?" in base_url else "?"
-    return f"{base_url.rstrip('/')}/{separator}{urlencode(query_params)}"
+    search_term = quote_plus(f"{keyword} {location}")
+    root = base_url.rstrip("/")
+
+    if page <= 1:
+        return f"{root}/?s={search_term}"
+    return f"{root}/page/{page}/?s={search_term}"
 
 
 def _extract_jobs_from_page(html: str, board_name: str) -> list[dict]:
@@ -283,12 +282,7 @@ def scrape_all() -> list[dict]:
     for keyword in SEARCH_KEYWORDS:
         for board in SCRAPE_BOARDS:
             board_name: str = board.get("name", "Unknown Board")
-            base_url: str = board.get("base_url", "")
             locations: list[str] = board.get("locations", DEFAULT_LOCATIONS)
-
-            if not base_url:
-                logger.warning("[%s] Board has no base_url; skipping.", board_name)
-                continue
 
             for location in locations:
                 combination_idx += 1
@@ -302,7 +296,7 @@ def scrape_all() -> list[dict]:
 
                 for page in range(1, _MAX_PAGES + 1):
                     target_url = _build_search_url(
-                        base_url, keyword, location, page,
+                        BASE_URL, keyword, location, page,
                     )
 
                     logger.info(
